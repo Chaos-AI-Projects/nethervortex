@@ -7,9 +7,9 @@ authors = [
 description = "A Python library for building and managing sequential and parallel execution flows."
 readme = "README.md"
 requires-python = ">=3.9"
+license = { text = "MIT" }
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -25,3 +25,11 @@ parallel = [
 [project.urls]
 "Homepage" = "https://github.com/Chaos-AI-Projects/nethervortex"
 "Bug Tracker" = "https://github.com/Chaos-AI-Projects/nethervortex/issues"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+
+[tool.setuptools]
+py-modules = ["nethervortex"]
