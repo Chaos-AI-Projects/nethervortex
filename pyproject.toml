@@ -6,7 +6,7 @@ authors = [
 ]
 description = "A Python library for building and managing sequential and parallel execution flows."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 classifiers = [
     "Programming Language :: Python :: 3",
