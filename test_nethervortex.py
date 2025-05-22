@@ -1,25 +1,3 @@
-# MIT License
-#
-# Copyright (c) 2025 Jun Sheng (Aka Chaos Eternal)
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
-
 """Tests for the nethervortex library components."""
 
 import logging
@@ -53,7 +31,10 @@ class ANode(Node):
     # pylint: disable=W0613
     def postlude(self, shared, prep_res, exec_res, *, arg2, **_):
         """Executes after dispatch."""
-        logger.info("ANode postlude: prep_res=%s, arg2=%s", prep_res, arg2)
+        logger.info("ANode postlude: prep_res=%s, arg2=%s",
+                    prep_res, arg2)
+        # This method implicitly returns None, which is then returned by
+        # Node.run
 
 
 class BNode(Node):
@@ -111,6 +92,52 @@ class DNode(Node):
         return "again"
 
 
+# --- Move FailingNode and AlwaysFailingNode to module level ---
+class FailingNode(Node):
+    """A node that fails a specified number of times."""
+    call_count = 0
+    _node_retry_waits = [0.05, 0.1]
+
+    # pylint: disable=W0613
+    def dispatch(self, prelude_res, **_):
+        """Simulates failing and then succeeding."""
+        FailingNode.call_count += 1
+        logger.info("FailingNode dispatch call_count: %s",
+                    FailingNode.call_count)
+        if FailingNode.call_count <= 2:  # Fail twice, succeed on third
+            raise ValueError("Simulated failure")
+        return "success"
+
+    # Add a postlude method to return the exec_res (dispatch result)
+    # pylint: disable=W0613
+    def postlude(self, shared, prep_res, exec_res, **_):
+        """Returns the execution result to confirm dispatch success."""
+        logger.info("FailingNode postlude: exec_res=%s", exec_res)
+        return exec_res
+
+
+class AlwaysFailingNode(Node):
+    """A node that always fails."""
+    call_count = 0
+    _node_retry_waits = [0.05]
+
+    # pylint: disable=W0613
+    def dispatch(self, prelude_res, **_):
+        """Always raises an error."""
+        AlwaysFailingNode.call_count += 1
+        logger.info("AlwaysFailingNode dispatch call_count: %s",
+                    AlwaysFailingNode.call_count)
+        raise ValueError("Always failing")
+
+    # Add a postlude method, even though it will not be reached in this
+    # specific test
+    # pylint: disable=W0613
+    def postlude(self, shared, prep_res, exec_res, **_):
+        logger.info("AlwaysFailingNode postlude "
+                    "(should not be reached in failure scenario).")
+        return exec_res  # Or None, as it won't be called
+
+
 # pylint: disable=W0621
 @pytest.fixture
 def capture_logs(caplog):
@@ -118,25 +145,39 @@ def capture_logs(caplog):
     caplog.set_level(logging.INFO)  # Capture INFO level messages and above
     return caplog
 
+@pytest.fixture(autouse=True)
+def reset_all_node_singletons():
+    """Fixture to reset singleton instances and call_counts for all Node
+    classes.
+    """
+    for node_class in [ANode, BNode, CNode, DNode,
+                       FailingNode, AlwaysFailingNode]:
+        # pylint: disable=W0212
+        if hasattr(node_class, "_instance"):
+            node_class._instance = None
+
+        if hasattr(node_class, "call_count"):
+            node_class.call_count = 0
+
 
 # pylint: disable=W0621
 def test_single_node_execution(capture_logs):
     """Test the execution of a single node."""
     node = ANode()
-    initial_shared = SharedData(config={"arg1": "test_arg1"},
-                                cmpnt={},
-                                state=None)
+    initial_shared = SharedData(
+        config={"arg1": "test_arg1"},
+        cmpnt={"D": {"config": {"arg2": "test_arg2"}}},
+        state=None
+    )
 
-    # When running a single node with .run(), successors are ignored.
-    # We are testing the node's individual prelude/dispatch/postlude.
     result = node.run(shared=initial_shared)
 
     assert "ANode prelude: arg1=test_arg1" in capture_logs.text
-    assert ("ANode dispatch: arg1=test_arg1, arg2=None"
+    assert ("ANode dispatch: arg1=test_arg1, arg2=test_arg2"
             in capture_logs.text)
-    assert ("ANode postlude: prep_res=ANode, arg2=None"
+    assert ("ANode postlude: prep_res=ANode, arg2=test_arg2"
             in capture_logs.text)
-    assert result == "default"
+    assert result is None
 
 
 # pylint: disable=W0621
@@ -203,9 +244,11 @@ def test_parallel_step_order_and_completion(capture_logs):
     anode >> ParallelStep()[cnode, bnode]
 
     flow = Flow(start=anode)
-    initial_shared_data = SharedData(config={"arg1": "test_parallel_arg1"},
-                                     cmpnt={},
-                                     state=None)
+    initial_shared_data = SharedData(
+        config={"arg1": "test_parallel_arg1"},
+        cmpnt={"D": {"config": {"arg2": "parallel_arg2"}}},
+        state=None
+    )
     flow.run(shared=initial_shared_data)
 
     # Assert that both parallel nodes were processed
@@ -217,46 +260,28 @@ def test_parallel_step_order_and_completion(capture_logs):
 
 def test_node_retry_logic():
     """Tests the retry mechanism of a node."""
-    class FailingNode(Node):
-        """A node that fails a specified number of times."""
-        call_count = 0
-        retry_waits = [0.01, 0.02]  # Short waits for testing
+    FailingNode.call_count = 0
 
-        # pylint: disable=W0613
-        def dispatch(self, prelude_res, **_):
-            """Simulates failing and then succeeding."""
-            FailingNode.call_count += 1
-            if FailingNode.call_count <= 2:  # Fail twice, succeed on third
-                raise ValueError("Simulated failure")
-            return "success"
-
-    failing_node = FailingNode()
+    # pylint: disable=W0212
+    failing_node = FailingNode(retry_waits=FailingNode._node_retry_waits)
     initial_shared = SharedData(config={}, cmpnt={}, state=None)
 
     result = failing_node.run(shared=initial_shared)
 
     assert result == "success"
-    # Should have been called 3 times (1 initial + 2 retries)
     assert FailingNode.call_count == 3
 
 
 def test_node_retry_exhaustion():
     """Tests that an exception is re-raised when retries are exhausted."""
-    class AlwaysFailingNode(Node):
-        """A node that always fails."""
-        call_count = 0
-        retry_waits = [0.01]  # Only one retry
+    AlwaysFailingNode.call_count = 0
 
-        # pylint: disable=W0613
-        def dispatch(self, prelude_res, **_):
-            """Always raises an error."""
-            AlwaysFailingNode.call_count += 1
-            raise ValueError("Always failing")
-
-    always_failing_node = AlwaysFailingNode()
+    # pylint: disable=W0212
+    always_failing_node = AlwaysFailingNode(
+        retry_waits=AlwaysFailingNode._node_retry_waits)
     initial_shared = SharedData(config={}, cmpnt={}, state=None)
 
     with pytest.raises(ValueError, match="Always failing"):
         always_failing_node.run(shared=initial_shared)
 
-    assert AlwaysFailingNode.call_count == 2  # Initial call + 1 retry
+    assert AlwaysFailingNode.call_count == 2
