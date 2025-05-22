@@ -43,7 +43,7 @@ in your project or by installing it via pip from the Git repository.
     If installing from GitHub, you can specify the extra directly:
 
     ```bash
-    pip install git+https://github.com/Chaos-AI-Projects/nethervortex.git[parallel]
+    pip install git+https://github.com/Chaos-AI-Projects/nethervortex.git#egg=nethervortex[parallel]
     ```
 
     If `pykka` is not installed, the `ParallelStep` functionality will
