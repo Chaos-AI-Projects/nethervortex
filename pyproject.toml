@@ -1,0 +1,27 @@
+[project]
+name = "nethervortex"
+version = "0.1.0"
+authors = [
+  { name="Jun Sheng", email="chaoseternal@gmail.com" }, 
+]
+description = "A Python library for building and managing sequential and parallel execution flows."
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: System :: Workflow Engine",
+]
+
+[project.optional-dependencies]
+parallel = [
+    "pykka>=3.0.0", # pykka is now an optional dependency under the 'parallel' extra
+]
+
+[project.urls]
+"Homepage" = "https://github.com/Chaos-AI-Projects/nethervortex"
+"Bug Tracker" = "https://github.com/Chaos-AI-Projects/nethervortex/issues"
