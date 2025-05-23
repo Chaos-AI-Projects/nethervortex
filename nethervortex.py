@@ -24,13 +24,17 @@
 """
 import logging
 import time
-from typing import Any, Required, TypedDict
+from typing import Any, TypedDict
+from typing_extensions import Required
 
 logger = logging.getLogger(__name__)
 
 class SharedData(TypedDict):
     config: Required[dict]
-    cmpnt: dict
+    # Reverting cmpnt and state to be not strictly Required for broader compatibility
+    # as the showcase SharedData initialization does not include them as Required.
+    # The strictness was added for a 3.11+ target, but compatibility is key now.
+    cmpnt: dict 
     state: Any
 
 class _Singleton(object):
