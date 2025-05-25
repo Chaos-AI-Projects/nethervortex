@@ -94,7 +94,9 @@ class PromptGenerationNode(Node):
     Node 1: Generates a prompt for a target LLM (Gemma) using an LLM
     (Gemini).
     It manages iteration rounds and constructs prompts based on templates.
-    The Gemini call is made in `dispatch`.
+    The Gemini client call is moved to `dispatch`.
+    Error handling for missing `problem_definition` is now by raising
+    `ValueError` in `prelude`. Max rounds check is removed from `prelude`.
     """
     COMP = "LLM_ITERATOR"
 
@@ -103,8 +105,8 @@ class PromptGenerationNode(Node):
         """
         Prepares for Gemma prompt generation.
 
-        Retrieves problem definition, manages round count, and constructs
-        the prompt string for Gemini (which will generate the Gemma prompt).
+        Retrieves problem definition, increments round count, and constructs
+        the prompt string for Gemini.
 
         Args:
             shared_data: The shared data object for the flow.
@@ -114,76 +116,75 @@ class PromptGenerationNode(Node):
                 Nethervortex.
 
         Returns:
-            A tuple (action_string, payload).
-            `action_string` indicates status ("proceed_to_dispatch",
-            "MAX_ROUNDS_REACHED", or "error_missing_problem_def").
-            `payload` is the constructed prompt string for Gemini or None.
+            The constructed prompt string for Gemini.
+
+        Raises:
+            ValueError: If `problem_definition` is not found in
+                `shared_data["cmpnt"][self.COMP]`.
         """
         class_name = self.__class__.__name__
-        logging.info("%s (Component: %s): Starting prelude.",
-                     class_name, self.COMP)
+        # logging.info("%s (Component: %s): Starting prelude.",  # Removed
+        #              class_name, self.COMP)
 
-        problem_definition = shared_data["cmpnt"][self.COMP].get(
-            "problem_definition"
-        )
+        comp_data = shared_data["cmpnt"].get(self.COMP, {})
+        problem_definition = comp_data.get("problem_definition")
         if not problem_definition:
-            logging.error(
-                "%s: Problem definition not found in "
-                "shared_data[\"cmpnt\"][\"%s\"].",
-                class_name, self.COMP
+            error_msg = (
+                f"{class_name}: Problem definition not found in "
+                f"shared_data[\"cmpnt\"][\"{self.COMP}\"]."
             )
-            return "error_missing_problem_def", None
+            logging.error(error_msg)
+            raise ValueError(error_msg)
 
-        round_count = shared_data["cmpnt"][self.COMP].get("round_count", 0) + 1
+        # Initialize or increment round count
+        round_count = comp_data.get("round_count", 0) + 1
         shared_data["cmpnt"][self.COMP]["round_count"] = round_count
         logging.info("Round: %s/5 for component %s", round_count, self.COMP)
-
-        if round_count > 5:
-            logging.warning("%s: Max rounds reached for component %s.",
-                            class_name, self.COMP)
-            return "MAX_ROUNDS_REACHED", None
+        # Max rounds check is removed from here as per Phase 2 guidelines.
+        # It will be handled by AssessmentNode or flow logic.
 
         prompt_for_gemini = gemma_prompt_generation_template.format(
             problem_definition=problem_definition
         )
-        logging.info("%s: Constructed prompt for Gemini: %s",
-                     class_name, prompt_for_gemini)
+        logging.info("%s: Constructed prompt for Gemini.", class_name)
+        # Line wrapping for potentially long prompt:
+        if len(prompt_for_gemini) > 60: # Arbitrary length for summary
+            logging.debug("%s: Full prompt: %s", class_name, prompt_for_gemini)
+        else:
+            logging.info("%s: Prompt for Gemini: %s", class_name, prompt_for_gemini)
 
-        return "proceed_to_dispatch", prompt_for_gemini
 
-    def dispatch(self, prelude_res, *, gemini_client: GeminiClient,
-                 **_config_kwargs):
+        return prompt_for_gemini
+
+    def dispatch(self, prelude_res_prompt_for_gemini: str, *,
+                 gemini_client: GeminiClient, **_config_kwargs):
         """
         Generates the Gemma prompt using Gemini.
 
-        Receives the prompt string for Gemini from `prelude_res` and
-        calls the Gemini client.
+        Receives the prompt string for Gemini from `prelude` (which is
+        `prelude_res_prompt_for_gemini`) and calls the Gemini client.
 
         Args:
-            prelude_res: The tuple (action, prompt_for_gemini) from
-                `prelude`.
+            prelude_res_prompt_for_gemini: The prompt string for Gemini,
+                returned by `prelude`.
             gemini_client: An instance of GeminiClient, passed via config.
             _config_kwargs: Catch-all for other config parameters from
                 Nethervortex.
 
         Returns:
             A tuple (action_string, payload).
-            `action_string` indicates status ("prompt_generated",
-            "max_rounds_exceeded", or "error_problem_def_missing").
-            `payload` is the generated Gemma prompt or None.
+            `action_string` is "prompt_generated".
+            `payload` is the generated Gemma prompt.
         """
         class_name = self.__class__.__name__
-        action_from_prelude, prompt_for_gemini = prelude_res
-
-        if action_from_prelude == "MAX_ROUNDS_REACHED":
-            return "max_rounds_exceeded", None
-        if action_from_prelude == "error_missing_problem_def":
-            # This error implies problem_definition was missing in prelude
-            return "error_problem_def_missing", None
+        # prelude_res_prompt_for_gemini is now directly the prompt string.
+        # No action_from_prelude or error checks here as prelude handles them
+        # by raising ValueError or returning the prompt.
         
-        # action_from_prelude is "proceed_to_dispatch"
         logging.info("%s: Calling Gemini to generate Gemma prompt.", class_name)
-        gemma_prompt = gemini_client.generate_content(prompt_for_gemini)
+        gemma_prompt = gemini_client.generate_content(
+            prelude_res_prompt_for_gemini
+        )
         logging.info("%s: Generated Gemma prompt by Gemini: %s",
                      class_name, gemma_prompt)
         
@@ -205,7 +206,7 @@ class PromptGenerationNode(Node):
             The action string from `exec_res` for flow control.
         """
         class_name = self.__class__.__name__
-        logging.info("%s (Component: %s): Postlude.", class_name, self.COMP)
+        # logging.info("%s (Component: %s): Postlude.", class_name, self.COMP) # Removed
         action, gemma_prompt = exec_res
 
         if action == "prompt_generated" and gemma_prompt:
@@ -225,7 +226,8 @@ class PromptGenerationNode(Node):
 class GemmaEvaluationNode(Node):
     """
     Node 2: Evaluates a Gemma prompt using an Ollama client.
-    The Ollama client call is made in `dispatch`.
+    The Ollama client call is made in `dispatch`. Error handling for
+    missing `current_gemma_prompt` is by raising `ValueError` in `prelude`.
     """
     COMP = "LLM_ITERATOR"
 
@@ -241,57 +243,53 @@ class GemmaEvaluationNode(Node):
                 Nethervortex.
 
         Returns:
-            A tuple (action_string, payload).
-            `action_string` indicates status ("proceed_to_dispatch" or
-            "error_missing_gemma_prompt").
-            `payload` is the Gemma prompt string or None.
+            The Gemma prompt string if found.
+
+        Raises:
+            ValueError: If `current_gemma_prompt` is not found in
+                `shared_data["cmpnt"][self.COMP]`.
         """
         class_name = self.__class__.__name__
-        logging.info("%s (Component: %s): Starting prelude.",
-                     class_name, self.COMP)
+        # logging.info("%s (Component: %s): Starting prelude.", # Removed
+        #              class_name, self.COMP)
 
-        gemma_prompt = shared_data["cmpnt"][self.COMP].get("current_gemma_prompt")
+        comp_data = shared_data["cmpnt"].get(self.COMP, {})
+        gemma_prompt = comp_data.get("current_gemma_prompt")
         if not gemma_prompt:
-            logging.error(
-                "%s: Gemma prompt not found in shared_data[\"cmpnt\"][\"%s\"].",
-                class_name, self.COMP
+            error_msg = (
+                f"{class_name}: Gemma prompt not found in "
+                f"shared_data[\"cmpnt\"][\"{self.COMP}\"]"
+                "[\"current_gemma_prompt\"]."
             )
-            return "error_missing_gemma_prompt", None
+            logging.error(error_msg)
+            raise ValueError(error_msg)
 
         logging.info("%s: Retrieved Gemma prompt for dispatch.", class_name)
-        return "proceed_to_dispatch", gemma_prompt
+        return gemma_prompt
 
-    def dispatch(self, prelude_res, *, ollama_client: OllamaClient,
-                 **_config_kwargs):
+    def dispatch(self, prelude_res_gemma_prompt: str, *,
+                 ollama_client: OllamaClient, **_config_kwargs):
         """
         Sends the prompt to Gemma (via Ollama client) and gets the response.
 
         Args:
-            prelude_res: The tuple (action, gemma_prompt_str) from `prelude`.
+            prelude_res_gemma_prompt: The Gemma prompt string from `prelude`.
             ollama_client: An instance of OllamaClient, passed via config.
             _config_kwargs: Catch-all for other config parameters from
                 Nethervortex.
 
         Returns:
             A tuple (action_string, payload).
-            `action_string` indicates status ("evaluation_complete" or
-            "evaluation_error_no_prompt").
-            `payload` is the Gemma response string or None.
+            `action_string` is "evaluation_complete".
+            `payload` is the Gemma response string.
         """
         class_name = self.__class__.__name__
-        action_from_prelude, gemma_prompt_str = prelude_res
-
-        if action_from_prelude == "error_missing_gemma_prompt":
-            logging.error(
-                "%s: Cannot proceed to dispatch, Gemma prompt was missing.",
-                class_name
-            )
-            return "evaluation_error_no_prompt", None
-
-        # action_from_prelude is "proceed_to_dispatch"
+        # prelude_res_gemma_prompt is now directly the prompt string.
+        # Error handling for missing prompt is done in prelude by raising ValueError.
+        
         logging.info("%s: Sending prompt to Ollama (Gemma): '%s'",
-                     class_name, gemma_prompt_str)
-        gemma_response = ollama_client.run(gemma_prompt_str)
+                     class_name, prelude_res_gemma_prompt)
+        gemma_response = ollama_client.run(prelude_res_gemma_prompt)
         logging.info("%s: Received response from Ollama (Gemma): '%s'",
                      class_name, gemma_response)
 
@@ -304,7 +302,8 @@ class GemmaEvaluationNode(Node):
 
         Args:
             shared_data: The shared data object for the flow.
-            _prelude_res: The result from `prelude` (unused here).
+            _prelude_res: The result from `prelude` (Gemma prompt string,
+                unused here as `exec_res` contains the response).
             exec_res: The tuple (action, gemma_response) from `dispatch`.
             _config_kwargs: Catch-all for other config parameters from
                 Nethervortex.
@@ -313,125 +312,108 @@ class GemmaEvaluationNode(Node):
             The action string from `exec_res` for flow control.
         """
         class_name = self.__class__.__name__
-        logging.info("%s (Component: %s): Postlude.", class_name, self.COMP)
+        # logging.info("%s (Component: %s): Postlude.", class_name, self.COMP) # Removed
         action, gemma_response = exec_res
 
         if action == "evaluation_complete" and gemma_response is not None:
-            shared_data["cmpnt"][self.COMP]["current_gemma_response"] = gemma_response
+            # It's good practice to ensure component data dict exists
+            comp_data = shared_data["cmpnt"].setdefault(self.COMP, {})
+            comp_data["current_gemma_response"] = gemma_response
             logging.info(
                 "%s: Saved Gemma response to shared_data[\"cmpnt\"][\"%s\"]"
                 "[\"current_gemma_response\"].", class_name, self.COMP
             )
-        elif action == "evaluation_error_no_prompt":
-            logging.error(
-                "%s: Evaluation error due to missing prompt in prelude. "
-                "No Gemma response saved.", class_name
-            )
-
+        # No specific error action from dispatch to handle here, as errors
+        # in prelude now raise exceptions. Dispatch errors would be exceptions too.
+        
         return action
 
 class AssessmentNode(Node):
     """
     Node 3: Assesses Gemma's response using a Gemini model.
-    It determines if the response satisfies the problem definition and
-    manages loop-back or flow termination based on the assessment and
-    current round count. The Gemini client call is made in `dispatch`.
+    It determines if the response satisfies the problem definition.
+    The Gemini client call is made in `dispatch`. Error handling for
+    missing data is by raising `ValueError` in `prelude`. The max rounds
+    check is now performed in `postlude`.
     """
     COMP = "LLM_ITERATOR"
 
     def prelude(self, shared_data: SharedData, *,
                 assessment_prompt_template: str, **_config_kwargs):
-        """
-        Prepares for assessing Gemma's response.
+        """Prepares for assessing Gemma's response.
 
-        Retrieves Gemma's response and the problem definition from shared
-        component data. Constructs the full assessment prompt string for Gemini.
+        Retrieves Gemma's response and problem definition, then constructs
+        the assessment prompt for Gemini.
 
         Args:
-            shared_data: The shared data object for the flow.
-            assessment_prompt_template: A template string for the assessment
-                prompt.
-            _config_kwargs: Catch-all for other config parameters from
-                Nethervortex.
+            shared_data: The shared data object.
+            assessment_prompt_template: Template for the assessment prompt.
+            _config_kwargs: Unused config parameters.
 
         Returns:
-            A tuple (action_string, payload).
-            `action_string` indicates status ("proceed_to_dispatch" or
-            an error string like "error_missing_gemma_response").
-            `payload` is the constructed prompt string for Gemini or None.
+            The constructed prompt string for Gemini.
+
+        Raises:
+            ValueError: If essential data is missing from `shared_data`.
         """
         class_name = self.__class__.__name__
-        logging.info("%s (Component: %s): Starting prelude.",
-                     class_name, self.COMP)
-
-        comp_data = shared_data["cmpnt"][self.COMP]
+        # "Starting prelude" log removed.
+        comp_data = shared_data["cmpnt"].get(self.COMP, {})
         gemma_response = comp_data.get("current_gemma_response")
         problem_definition = comp_data.get("problem_definition")
 
         if gemma_response is None:
-            logging.error(
-                "%s: Gemma response not found in shared_data[\"cmpnt\"][\"%s\"].",
-                class_name, self.COMP
+            error_msg = (
+                f"{class_name}: Gemma response not found in component "
+                f"\"{self.COMP}\"."
             )
-            return "error_missing_gemma_response", None
+            logging.error(error_msg)
+            raise ValueError(error_msg)
         if not problem_definition:
-            logging.error(
-                "%s: Problem definition not found in shared_data[\"cmpnt\"]"
-                "[\"%s\"] for assessment.", class_name, self.COMP
+            error_msg = (
+                f"{class_name}: Problem definition not found in component "
+                f"\"{self.COMP}\" for assessment."
             )
-            return "error_missing_problem_def_for_assessment", None
+            logging.error(error_msg)
+            raise ValueError(error_msg)
 
         prompt_for_gemini_assessment = assessment_prompt_template.format(
             problem_definition=problem_definition,
             gemma_response=gemma_response
         )
+        # Log kept, consider DEBUG if too verbose for INFO.
         logging.info("%s: Constructed assessment prompt for Gemini.", class_name)
-        return "proceed_to_dispatch", prompt_for_gemini_assessment
+        return prompt_for_gemini_assessment
 
-    def dispatch(self, prelude_res, *, gemini_client: GeminiClient,
-                 **_config_kwargs):
-        """
-        Sends the assessment prompt to Gemini and gets the YES/NO result.
+    def dispatch(self, prelude_res_assessment_prompt: str, *,
+                 gemini_client: GeminiClient, **_config_kwargs):
+        """Sends the assessment prompt to Gemini and gets the result.
 
         Args:
-            prelude_res: The tuple (action, prompt_str) from `prelude`.
-            gemini_client: An instance of GeminiClient, passed via config.
-            _config_kwargs: Catch-all for other config parameters from
-                Nethervortex.
+            prelude_res_assessment_prompt: The prompt string from `prelude`.
+            gemini_client: An instance of GeminiClient from config.
+            _config_kwargs: Unused config parameters.
 
         Returns:
-            A tuple (action_string, payload).
-            `action_string` indicates status ("assessment_done" or an
-            error string).
-            `payload` is the assessment result string ("YES"/"NO") or None.
+            A tuple (action_string, payload), where payload is the
+            assessment result ("YES"/"NO") or None on error.
         """
         class_name = self.__class__.__name__
-        action_from_prelude, prompt_for_assessment = prelude_res
-
-        if action_from_prelude in [
-            "error_missing_gemma_response",
-            "error_missing_problem_def_for_assessment"
-        ]:
-            logging.error(
-                "%s: Cannot proceed to dispatch due to error from prelude: %s.",
-                class_name, action_from_prelude
-            )
-            # Consolidate error action for postlude to handle
-            return "assessment_error_missing_data", None
-
         if not gemini_client.api_key:
             logging.error(
-                "%s: Gemini API key missing in provided client. "
-                "Cannot perform assessment.", class_name
+                "%s: Gemini API key missing. Cannot perform assessment.",
+                class_name
             )
             return "assessment_error_missing_key", None
         
+        # Truncated log for potentially long prompts.
         logging.info(
-            "%s: Sending assessment prompt to Gemini.", class_name
+            "%s: Sending assessment prompt to Gemini (first 50 chars): '%s...'",
+            class_name, prelude_res_assessment_prompt[:50]
         )
         try:
             assessment_result = gemini_client.generate_content(
-                prompt_for_assessment
+                prelude_res_assessment_prompt
             ).strip().upper()
             logging.info("%s: Received assessment from Gemini: '%s'",
                          class_name, assessment_result)
@@ -444,63 +426,56 @@ class AssessmentNode(Node):
 
     def postlude(self, shared_data: SharedData, _prelude_res, exec_res,
                  **_config_kwargs):
-        """
-        Determines the next flow step based on assessment and round count.
+        """Determines next flow step based on assessment and round count.
 
         Args:
-            shared_data: The shared data object for the flow.
-            _prelude_res: The result from `prelude` (unused here).
-            exec_res: The tuple (action, assessment_result) from `dispatch`.
-            _config_kwargs: Catch-all for other config parameters from
-                Nethervortex.
+            shared_data: The shared data object.
+            _prelude_res: Result from `prelude` (unused).
+            exec_res: Tuple (action, assessment_result) from `dispatch`.
+            _config_kwargs: Unused config parameters.
 
         Returns:
-            The action string for flow control (e.g., "satisfied_end_flow",
-            "max_rounds_end_flow", "unsatisfied_loop_back", or
-            "assessment_failed_end_flow").
+            The action string for flow control.
         """
         class_name = self.__class__.__name__
-        logging.info("%s (Component: %s): Postlude.", class_name, self.COMP)
+        # "Postlude." log removed.
         action, assessment_result = exec_res
 
-        if action in ["assessment_error_missing_data",
-                      "assessment_error_api_call",
-                      "assessment_error_missing_key"]:
-            logging.error(
+        if action in ["assessment_error_missing_key",
+                      "assessment_error_api_call"]:
+            logging.error( # Kept
                 "%s: Assessment error occurred (action: %s). Ending flow path.",
                 class_name, action
             )
             return "assessment_failed_end_flow"
 
-        # No shared data modifications are made in this postlude,
-        # only decision logic for the next step.
         current_round = shared_data["cmpnt"][self.COMP].get("round_count", 0)
 
         if assessment_result == "YES":
-            logging.info(
+            logging.info( # Kept
                 "%s: Assessment is YES. Problem satisfied in round %s.",
                 class_name, current_round
             )
             return "satisfied_end_flow"
         
         if assessment_result != "NO": 
-            logging.warning(
+            logging.warning( # Kept
                 "%s: Assessment result was '%s', not 'NO'. Treating as NO.",
                 class_name, assessment_result
             )
         
-        logging.info(
+        logging.info( # Kept
             "%s: Assessment is NO. Problem not satisfied in round %s.",
             class_name, current_round
         )
         if current_round >= 5:
-            logging.info(
+            logging.info( # Kept
                 "%s: Max rounds (%s/5) reached for component %s. Ending flow.",
                 class_name, current_round, self.COMP
             )
             return "max_rounds_end_flow"
         
-        logging.info(
+        logging.info( # Kept
             "%s: Max rounds not reached (%s/5) for component %s. Looping back.",
             class_name, current_round, self.COMP
         )
@@ -529,22 +504,18 @@ class FlowEndNode(Node):
             this node's dispatch method.
         """
         class_name = self.__class__.__name__
-        logging.info("%s (Component: %s): Flow has reached its end.",
-                     class_name, self.COMP)
-
+        # "Flow has reached its end." log was already made more specific.
         comp_data = shared_data["cmpnt"].get(self.COMP, {})
         final_round_count = comp_data.get("round_count", "N/A")
-        logging.info(
-            "%s: Total rounds attempted in component %s: %s",
-            class_name, self.COMP, final_round_count
-        )
-
         final_gemma_response = comp_data.get("current_gemma_response", "N/A")
         problem_def = comp_data.get("problem_definition", "N/A")
-        logging.info(
-            "%s: Final Gemma response for problem '%s': %s",
-            class_name, problem_def, final_gemma_response
-        )
+        
+        logging.info( 
+            "%s (Component: %s): Flow ended. Total rounds: %s. "
+            "Final Gemma response for '%s': %s",
+            class_name, self.COMP, final_round_count,
+            problem_def, final_gemma_response
+        ) # This log is kept as it's a summary.
         
         return "flow_ended_data_collected", None
 
@@ -563,10 +534,9 @@ class FlowEndNode(Node):
             None payload.
         """
         class_name = self.__class__.__name__
-        logging.info(
-            "%s (Component: %s): Dispatching final actions (if any).",
-            class_name, self.COMP
-        )
+        # "Dispatching final actions" log changed to debug.
+        logging.debug("%s (Component: %s): Dispatch in FlowEndNode.",
+                     class_name, self.COMP)
         return "flow_complete", None
 
     def postlude(self, _shared_data: SharedData, _prelude_res, exec_res,
@@ -586,7 +556,8 @@ class FlowEndNode(Node):
             of this node's execution.
         """
         class_name = self.__class__.__name__
-        logging.info("%s (Component: %s): Finalizing flow.",
+        # "Finalizing flow." log changed to debug.
+        logging.debug("%s (Component: %s): Postlude in FlowEndNode.",
                      class_name, self.COMP)
         action, _unused_payload = exec_res
         return action
@@ -613,8 +584,8 @@ flow_end_node = FlowEndNode()
 
 # --- Flow Logic Definition ---
 # Define the main flow path
-(prompt_gen_node - "prompt_generated") >> gemma_eval_node # Corrected transition
-gemma_eval_node >> assessment_node
+(prompt_gen_node - "prompt_generated") >> gemma_eval_node
+(gemma_eval_node - "evaluation_complete") >> assessment_node # Explicit action
 
 # Define conditional transitions from AssessmentNode
 assessment_node - "satisfied_end_flow" >> flow_end_node
@@ -622,12 +593,12 @@ assessment_node - "max_rounds_end_flow" >> flow_end_node
 assessment_node - "assessment_failed_end_flow" >> flow_end_node
 assessment_node - "unsatisfied_loop_back" >> prompt_gen_node
 
-# Define transitions for errors/max_rounds from earlier nodes
-prompt_gen_node - "max_rounds_exceeded" >> flow_end_node
-prompt_gen_node - "error_problem_def_missing" >> flow_end_node 
-gemma_eval_node - "evaluation_error_no_prompt" >> flow_end_node
-# AssessmentNode's internal errors like missing data, key, or API call failure
-# are routed to "assessment_failed_end_flow" by its postlude.
+# Error/exception handling in prelude of PromptGenerationNode and GemmaEvaluationNode
+# now raises ValueError, which would halt the flow if not caught by a custom
+# Flow error handling mechanism (not implemented in this showcase).
+# The specific error transitions for these nodes are removed.
+# AssessmentNode's internal errors are handled by its postlude returning
+# "assessment_failed_end_flow".
 
 # --- Main Execution Block ---
 if __name__ == "__main__":

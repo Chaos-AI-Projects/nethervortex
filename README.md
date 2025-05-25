@@ -1,5 +1,8 @@
 # Nethervortex
 
+**Note: Nethervortex requires Python 3.11+ due to its use of features
+like `typing.Required`.**
+
 Nethervortex is a Python library designed for building and managing
 sequential and parallel execution flows, particularly useful for
 orchestrating tasks and processes. It provides a structured way to
@@ -157,14 +160,15 @@ concurrency.
 
 ### SharedData
 
-A `TypedDict` used to pass data throughout the flow. It has the
-following keys:
+A `TypedDict` used to pass data throughout the flow. As of the latest
+version of `nethervortex.py`:
 
-* **`config`**: A dictionary for general configuration.
-* **`cmpnt`**: A dictionary to hold component-specific data and
-    configurations.
-* **`state`**: A field to store the current state or the name of
-    the currently executing node.
+* **`config: Required[dict]`**: A dictionary for general configuration. This
+  field is mandatory.
+* **`cmpnt: dict`**: A dictionary to hold component-specific data and
+  configurations. This field is optional.
+* **`state: Any`**: A field to store the current state or the name of
+  the currently executing node. This field is optional.
 
 ## Usage Examples
 
@@ -256,60 +260,165 @@ res = f.run(shared=SharedData(config={"arg1": "arg1_v"},
 print(res)
 ```
 
-### Showcase: `showcase.py`
+### Showcase: Iterative LLM Flow (`llm_flow_showcase.py`)
 
-The `showcase.py` script in the root of the repository provides a more
-complex and practical demonstration of Nethervortex capabilities. It
-simulates a multi-step data processing pipeline:
+The `llm_flow_showcase.py` script, located in the root of the repository,
+demonstrates a more advanced, iterative flow where simulated Language Models
+(LLMs) interact in a loop to achieve a goal. This showcase highlights
+several key features and idiomatic uses of the Nethervortex library.
 
-1.  **Fetch Data**: A node simulates fetching data from two different sources.
-2.  **Parallel Processing**: `ParallelStep` is used to process the data from these
-    two sources concurrently. Each processing path involves a node that
-    manipulates the data (e.g., multiplying values by 2).
-3.  **Aggregate Results**: The processed data from both sources is then
-    aggregated into a single dataset.
-4.  **Conditional Decision**: Based on the sum of the aggregated data, the flow
-    makes a conditional decision (e.g., routing to a "high sum" or "low sum"
-    path).
-5.  **Report Sum**: A node reports whether the sum was high or low.
-6.  **Final Summary**: A concluding node logs the completion of the showcase flow.
+#### Purpose
 
-This showcase demonstrates:
-*   Custom `Node` implementations with `prelude`, `dispatch`, and `postlude` methods.
-*   Idiomatic data flow and `SharedData` management, where `dispatch` returns `(outcome, payload)` and `postlude` handles data persistence and returns the `outcome` for flow control.
-*   Usage of `ParallelStep` for concurrent execution of nodes.
-*   Conditional transitions based on node outcomes.
-*   Configuration parameter passing to nodes.
+The primary purpose of this showcase is to illustrate:
+- An iterative multi-step process involving LLM interactions.
+- Component-based data management within `SharedData`.
+- Configuration injection for clients and templates.
+- Conditional looping and termination based on node outcomes.
+- Error handling within nodes (e.g., missing data via `ValueError`).
+
+#### Flow Overview
+
+The flow simulates an iterative process of generating and assessing text:
+
+1.  **`PromptGenerationNode`**:
+    *   Retrieves a `problem_definition` (e.g., "Write a poem about a cat")
+        from `shared_data["cmpnt"]["LLM_ITERATOR"]`.
+    *   Increments a `round_count` within the same component data.
+    *   Uses a `gemma_prompt_generation_template` (passed as config) and the
+        `problem_definition` to construct a prompt for a Gemini model.
+    *   In its `dispatch` method, calls a (placeholder) `GeminiClient`
+        (passed as config) to generate a prompt suitable for a Gemma model.
+    *   Saves the generated Gemma prompt to
+        `shared_data["cmpnt"]["LLM_ITERATOR"]["current_gemma_prompt"]`.
+
+2.  **`GemmaEvaluationNode`**:
+    *   Retrieves the `current_gemma_prompt`.
+    *   In its `dispatch` method, calls a (placeholder) `OllamaClient`
+        (passed as config) to simulate Gemma processing the prompt and
+        producing a response.
+    *   Saves Gemma's response to
+        `shared_data["cmpnt"]["LLM_ITERATOR"]["current_gemma_response"]`.
+
+3.  **`AssessmentNode`**:
+    *   Retrieves `current_gemma_response` and the original
+        `problem_definition`.
+    *   Constructs a prompt for Gemini using an `assessment_prompt_template`
+        (passed as config) to ask if Gemma's response satisfies the
+        problem definition.
+    *   In its `dispatch` method, calls the `GeminiClient` (passed as config)
+        to get an assessment (e.g., "YES" or "NO").
+    *   Its `postlude` method checks this assessment and the `round_count`:
+        - If "YES": transitions to `satisfied_end_flow`.
+        - If "NO" and `round_count` < 5: transitions to `unsatisfied_loop_back`
+          (back to `PromptGenerationNode`).
+        - If "NO" and `round_count` >= 5: transitions to `max_rounds_end_flow`.
+        - Handles errors (e.g., missing API key for Gemini) by transitioning
+          to `assessment_failed_end_flow`.
+
+4.  **`FlowEndNode`**:
+    *   A terminal node that logs the final state, such as the total rounds
+        attempted and the last Gemma response.
+
+#### Nethervortex Concepts Demonstrated
+
+This showcase illustrates several important Nethervortex concepts:
+
+-   **Node Definition**: Clear separation of concerns into `prelude`,
+    `dispatch`, and `postlude` methods for each logical step.
+-   **Component-Based Data Management**: Nodes use `COMP = "LLM_ITERATOR"`
+    to store and retrieve data within a dedicated namespace
+    (`shared_data["cmpnt"]["LLM_ITERATOR"]`), keeping shared data organized.
+-   **Configuration Injection**:
+    -   Client instances (`GeminiClient`, `OllamaClient`) are instantiated
+        once and passed globally via `shared_data["config"]`. Nodes receive
+        these clients as named keyword arguments in their `dispatch` (or
+        `prelude`) methods where needed.
+    -   Prompt templates (`gemma_prompt_generation_template`,
+        `assessment_prompt_template`) are stored in
+        `shared_data["cmpnt"]["LLM_ITERATOR"]["config"]` and are also passed
+        as named keyword arguments to the relevant node methods.
+-   **Conditional Transitions & Looping**: The `AssessmentNode` demonstrates
+    conditional branching based on its `dispatch` result, creating a loop
+    back to `PromptGenerationNode` or proceeding to `FlowEndNode`.
+-   **Error Handling**: `prelude` methods in nodes like `PromptGenerationNode`
+    and `GemmaEvaluationNode` raise `ValueError` for critical missing data,
+    which would typically halt the flow unless caught by a higher-level
+    error handling mechanism in the `Flow` (not explicitly shown in this
+    showcase's `Flow` runner, but a capability of robust Nethervortex usage).
+    `AssessmentNode` also demonstrates returning specific error actions.
+-   **Idiomatic Data Flow**: Nodes primarily return `(action_string, payload)`
+    from `dispatch`, and `postlude` is responsible for persisting the
+    `payload` to `shared_data` and returning the `action_string` for flow
+    control. `prelude` returns only the data `dispatch` needs.
 
 #### How to Run
 
-1.  Ensure you have the necessary dependencies installed. `showcase.py`
-    requires `pykka` (for `ParallelStep`) and `typing_extensions` (for
-    compatibility with older Python versions regarding typing hints used in
-    `nethervortex.py`).
-    ```bash
-    pip install pykka typing-extensions
-    ```
-    (If you installed Nethervortex with the `[parallel]` extra, `pykka` will
-    already be present).
+1.  **Environment Setup**:
+    *   **Nethervortex requires Python 3.11+**. Ensure your environment
+        meets this requirement.
+    *   The `llm_flow_showcase.py` script itself does not add further
+        dependencies beyond standard Python libraries and what Nethervortex
+        might require (e.g., `pykka` if `ParallelStep` were used, though it's
+        not in this specific showcase).
 
-2.  Navigate to the root directory of the repository and run the script:
+2.  **Set Environment Variable (Important for AssessmentNode)**:
+    The `AssessmentNode` requires a `GEMINI_API_KEY` to simulate making an
+    assessment call. While the `GeminiClient` is a placeholder, the node's
+    logic checks for the presence of this key in the client instance.
+    To run the showcase through all potential paths, including successful
+    assessment (simulated), set the environment variable:
     ```bash
-    python showcase.py
+    export GEMINI_API_KEY="your_dummy_or_actual_api_key"
     ```
+    If this key is not set, the `GeminiClient` instance will have `api_key=None`.
+    `PromptGenerationNode`'s `dispatch` will use the placeholder's no-key
+    fallback. `AssessmentNode`'s `dispatch` will detect the missing key on its
+    `gemini_client` argument and return an `"assessment_error_missing_key"`
+    action, leading to the `assessment_failed_end_flow` path.
+
+3.  **Execute the Script**:
+    Navigate to the root directory of the repository and run:
+    ```bash
+    python llm_flow_showcase.py
+    ```
+
+#### Placeholder Clients
+
+It's crucial to understand that `OllamaClient` and `GeminiClient` in this
+script are **placeholders**. They simulate responses and do not make actual
+API calls. For real-world use, these would need to be replaced with
+implementations that interact with the actual Ollama and Gemini services.
 
 #### Expected Output
 
-The script will produce a series of log messages to the console. These
-logs will show the execution sequence of the nodes, including:
-*   Data fetching and initialization messages.
-*   Logs from each parallel processing branch.
-*   Aggregation details and the calculated sum.
-*   The conditional path taken (high or low sum).
-*   Final completion messages.
+The script produces console logs detailing the flow's execution. While
+highly verbose entry/exit logs for every single `prelude`, `dispatch`, and
+`postlude` method have been reduced for clarity, you will still see key
+operational logs, including:
+- Initialization messages and client readiness (e.g., Gemini client warnings
+  if an API key is not provided).
+- `PromptGenerationNode`: Round progression (e.g., "Round: 1/5"),
+  constructed prompts for Gemini, and the resulting Gemma prompt from Gemini.
+- `GemmaEvaluationNode`: The Gemma prompt being sent to Ollama, and the
+  simulated response from Ollama.
+- `AssessmentNode`: The constructed assessment prompt for Gemini, the
+  assessment result ("YES"/"NO") from Gemini, and the decision logic based
+  on the assessment and round count (e.g., "Assessment is NO. Problem not
+  satisfied...", "Max rounds not reached... Looping back.", or "Problem
+  satisfied...").
+- `FlowEndNode`: A summary message including total rounds attempted and the
+  final Gemma response for the problem.
+- Overall flow start and end messages, including the final action that
+  terminated the flow and the final state of the `LLM_ITERATOR` component
+  in `shared_data`.
 
-This provides a clear view of the flow's progression and how different
-Nethervortex features work together in a more elaborate scenario.
+The logs provide a clear trace of the iterative process, key data being
+generated and passed, and how conditional logic directs the flow.
+For example, if `GEMINI_API_KEY` is not set, you should expect the
+`AssessmentNode` to log an error about the missing key and the flow to
+terminate via the `assessment_failed_end_flow` path. If the key is set,
+the flow will loop 5 times (as the placeholders currently always result in a "NO"
+assessment) and then terminate via `max_rounds_end_flow`.
 
 ---
 *This README and the accompanying documentation were generated by
